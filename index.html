@@ -1,0 +1,376 @@
+<!doctype html>
+<html>
+	<head>
+		<title>DAV ACL</title>
+		<script>
+// based on cyrus web admin page
+var XML_DAV_NS = 'DAV:';
+var XML_CALDAV_NS = 'urn:ietf:params:xml:ns:caldav';
+var XML_CARDDAV_NS = 'urn:ietf:params:xml:ns:carddav';
+var XML_CYRUS_NS = 'http://cyrusimap.org/ns/';
+var X_CLIENT = navigator.userAgent;
+var PREFIX = "/davproxy";
+
+
+function share_collection(url, share, cb) {
+	var doc = document.implementation.createDocument(XML_DAV_NS, "D:acl", null);
+	var root = doc.documentElement;
+
+	for (var i in share) {
+		var ace = doc.createElementNS(XML_DAV_NS, "D:ace");
+		root.appendChild(ace);
+		var s = share[i];
+		ace.appendChild(s.principal);
+
+		var grant = doc.createElementNS(XML_DAV_NS, "D:grant");
+		for (var j = 0; j < s.privs.length; ++j) {
+			grant.appendChild(s.privs[j]);
+		}
+		ace.appendChild(grant);
+	}
+
+	var req = new XMLHttpRequest();
+	req.open('ACL', url);
+	req.setRequestHeader('X-Client', X_CLIENT);
+	req.setRequestHeader('Content-Type', 'application/xml');
+	req.send(doc);
+	req.onreadystatechange = function() {
+		if (req.readyState !== 4) return;
+		cb(req.status);
+	};
+}
+
+function get_last_nonempty(arr)
+{
+	for (var i = arr.length - 1; i >= 0; --i) if (arr[i] != "") return arr[i];
+	return null;
+}
+
+function _spl2sel(spl)
+{
+	var sel = [];
+	for (var i = 0; i < spl.children.length; ++i) {
+		if (spl.children[i].tagName != "supported-privilege") continue;
+		var priv = spl.children[i].getElementsByTagNameNS(XML_DAV_NS, "privilege")[0].children[0].tagName;
+		var description = spl.children[i].getElementsByTagNameNS(XML_DAV_NS, "description")[0].textContent;
+		var abstract = spl.children[i].getElementsByTagNameNS(XML_DAV_NS, "abstract").length != 0;
+		sel.push([ priv, description, 0, abstract ]);
+		var selch = _spl2sel(spl.children[i]);
+		for (var j = 0; j < selch.length; ++j) {
+			++selch[j][2];
+			sel.push(selch[j]);
+		}
+	}
+	return sel;
+}
+function spl2sel(spl, gr, id)
+{
+	var grlut = {};
+	for (var i = 0; i < gr.length; ++i) grlut[gr[i]] = 1;
+	var sel = _spl2sel(spl);
+	var selhtml = document.createElement("select");
+	selhtml.name = "sel" + id;
+	selhtml.multiple = true;
+	for (var i = 0; i < sel.length; ++i) {
+		var opt = document.createElement("option");
+		opt.value = i;
+		opt.innerText = sel[i][1];
+		opt.selected = grlut[sel[i][0]];
+		opt.style.paddingLeft = sel[i][2] * 15 + "px";
+		if (sel[i][3]) opt.style.fontStyle = "italic";
+		selhtml.appendChild(opt);
+		
+	}
+	return selhtml;
+}
+function collect_grants(spl)
+{
+	var gr = [];
+	for (var i = 0; i < spl.children.length; ++i) {
+		if (spl.children[i].tagName != "supported-privilege") continue;
+		var priv = spl.children[i].getElementsByTagNameNS(XML_DAV_NS, "privilege")[0];
+		gr.push(priv);
+		gr = gr.concat(collect_grants(spl.children[i]));
+	}
+	return gr;
+}
+
+function get_principal(url, user, pass, cb)
+{
+	var doc = document.implementation.createDocument(XML_DAV_NS, "propfind", null);
+	var root = doc.documentElement;
+	var prop = doc.createElementNS(XML_DAV_NS, "prop");
+	root.appendChild(prop);
+	prop.appendChild(doc.createElementNS(XML_DAV_NS, "current-user-principal"));
+	prop.appendChild(doc.createElementNS(XML_DAV_NS, "principal-collection-set"));
+
+	var req = new XMLHttpRequest();
+	req.open('PROPFIND', url);
+	req.setRequestHeader('X-Client', X_CLIENT);
+	req.setRequestHeader('Content-Type', 'application/xml');
+	req.setRequestHeader('Depth', '0');
+	req.setRequestHeader('Authorization', 'Basic ' + btoa(user + ':' + pass));
+	req.send(doc);
+	req.onreadystatechange = function() {
+		if (req.readyState !== 4) return;
+
+		var res = req.responseXML.getElementsByTagNameNS(XML_DAV_NS, "response")[0];
+		var cup = res.getElementsByTagNameNS(XML_DAV_NS, "current-user-principal")[0];
+		var pcs = res.getElementsByTagNameNS(XML_DAV_NS, "principal-collection-set")[0];
+		var chref = cup.getElementsByTagNameNS(XML_DAV_NS, "href")[0].textContent;
+		var phref = pcs.getElementsByTagNameNS(XML_DAV_NS, "href")[0].textContent;
+		cb(chref, phref);
+	};
+}
+function get_homes(url, user, pass, cb)
+{
+	var doc = document.implementation.createDocument(XML_DAV_NS, "propfind", null);
+	var root = doc.documentElement;
+	var prop = doc.createElementNS(XML_DAV_NS, "prop");
+	root.appendChild(prop);
+	prop.appendChild(doc.createElementNS(XML_CALDAV_NS, "calendar-home-set"));
+	prop.appendChild(doc.createElementNS(XML_CARDDAV_NS, "addressbook-home-set"));
+
+	var req = new XMLHttpRequest();
+	req.open('PROPFIND', url);
+	req.setRequestHeader('X-Client', X_CLIENT);
+	req.setRequestHeader('Content-Type', 'application/xml');
+	req.setRequestHeader('Depth', '0');
+	req.setRequestHeader('Authorization', 'Basic ' + btoa(user + ':' + pass));
+	req.send(doc);
+	req.onreadystatechange = function() {
+		if (req.readyState !== 4) return;
+
+		var res = req.responseXML.getElementsByTagNameNS(XML_DAV_NS, "response")[0];
+		var chs = res.getElementsByTagNameNS(XML_CALDAV_NS, "calendar-home-set")[0];
+		var ahs = res.getElementsByTagNameNS(XML_CARDDAV_NS, "addressbook-home-set")[0];
+		var chref = chs.getElementsByTagNameNS(XML_DAV_NS, "href")[0].textContent;
+		var ahref = ahs.getElementsByTagNameNS(XML_DAV_NS, "href")[0].textContent;
+		cb(chref, ahref);
+	};
+}
+function get_collection(url, user, pass, cb)
+{
+	var doc = document.implementation.createDocument(XML_DAV_NS, "propfind", null);
+	var root = doc.documentElement;
+	var prop = doc.createElementNS(XML_DAV_NS, "prop");
+	root.appendChild(prop);
+	prop.appendChild(doc.createElementNS(XML_DAV_NS, "displayname"));
+
+	var req = new XMLHttpRequest();
+	req.open('PROPFIND', url);
+	req.setRequestHeader('X-Client', X_CLIENT);
+	req.setRequestHeader('Content-Type', 'application/xml');
+	req.setRequestHeader('Depth', '1');
+	req.setRequestHeader('Authorization', 'Basic ' + btoa(user + ':' + pass));
+	req.send(doc);
+	req.onreadystatechange = function() {
+		if (req.readyState !== 4) return;
+
+		var res = req.responseXML.getElementsByTagNameNS(XML_DAV_NS, "response");
+		var cols = [];
+		for (var i = 0; i < res.length; ++i) {
+			var href = res[i].getElementsByTagNameNS(XML_DAV_NS, "href")[0].textContent;
+			var name = res[i].getElementsByTagNameNS(XML_DAV_NS, "displayname")[0].textContent;
+			cols.push({ href: href, name: name });
+		}
+		cb(cols);
+	};
+}
+
+function generate_ace(idx, aclelm, spl, principal, grants)
+{
+	var user;
+	var pr = principal.children[0].textContent;
+	var principal_type = principal.children[0].tagName;
+	if (principal_type == "self") user = "[self]";
+	else if (principal_type == "all") user = "[all]";
+	else if (principal_type == "href") user = get_last_nonempty(pr.split("/"));
+	var gr = [];
+	for (var j = 0; j < grants.length; ++j) {
+		gr.push(grants[j].children[0].tagName);
+	}
+
+	var tr = document.createElement("tr");
+	var tduser = document.createElement("td");
+	tr.appendChild(tduser);
+	var tdgrants = document.createElement("td");
+	tr.appendChild(tdgrants);
+	aclelm.appendChild(tr);
+
+	var aclsel = spl2sel(spl, gr, idx);
+	tdgrants.appendChild(aclsel);
+
+	tduser.innerText = user;
+}
+
+function acl_list(url, user, pass, form, principal_prefix)
+{
+	form.style.display = "block";
+	var aclelm = form.getElementsByTagName("tbody")[0];
+	aclelm.innerHTML = "";
+
+	var doc = document.implementation.createDocument(XML_DAV_NS, "propfind", null);
+	var root = doc.documentElement;
+
+	var prop = doc.createElementNS(XML_DAV_NS, "prop");
+	root.appendChild(prop);
+
+	prop.appendChild(doc.createElementNS(XML_DAV_NS, "supported-privilege-set"));
+
+	var acl = doc.createElementNS(XML_DAV_NS, "acl");
+	prop.appendChild(acl);
+
+	var req = new XMLHttpRequest();
+	req.open('PROPFIND', url);
+	req.setRequestHeader('X-Client', X_CLIENT);
+	req.setRequestHeader('Content-Type', 'application/xml');
+	req.setRequestHeader('Depth', '0');
+	req.setRequestHeader('Authorization', 'Basic ' + btoa(user + ':' + pass));
+	req.send(doc);
+	req.onreadystatechange = function() {
+		if (req.readyState !== 4) return;
+
+		var resdoc = req.responseXML;
+		var res = resdoc.getElementsByTagNameNS(XML_DAV_NS, "response")[0];
+		var href = res.getElementsByTagNameNS(XML_DAV_NS, "href")[0].textContent;
+		var acl = res.getElementsByTagNameNS(XML_DAV_NS, "acl")[0];
+		var spl = res.getElementsByTagNameNS(XML_DAV_NS, "supported-privilege-set")[0];
+		var ace = acl.getElementsByTagNameNS(XML_DAV_NS, "ace");
+		var grantnodes = collect_grants(spl);
+		var principals = [];
+
+		form.getElementsByClassName("new")[0].onclick = function()
+		{
+			var principal_raw = prompt("Enter principal name or [self]/[all]");
+			var principal = resdoc.createElementNS(XML_DAV_NS, "principal");
+			if (principal_raw == "[self]") {
+				principal.appendChild(resdoc.createElementNS(XML_DAV_NS, "self"));
+			} else if (principal_raw == "[all]") {
+				principal.appendChild(resdoc.createElementNS(XML_DAV_NS, "all"));
+			} else {
+				var href = resdoc.createElementNS(XML_DAV_NS, "href");
+				href.textContent = principal_prefix + principal_raw + "/";
+				principal.appendChild(href);
+			}
+			principals.push(principal);
+			generate_ace(principals.length - 1, aclelm, spl, principal, []);
+		};
+
+		for (var i = 0; i < ace.length; ++i) {
+			var principal = ace[i].getElementsByTagNameNS(XML_DAV_NS, "principal")[0];
+			principals.push(principal);
+			var grants = ace[i].getElementsByTagNameNS(XML_DAV_NS, "grant")[0].children;
+			generate_ace(i, aclelm, spl, principal, grants);
+		}
+		form.onsubmit = function(e) {
+			var fd = new FormData(this);
+			var data = {};
+			for (var pair of fd.entries()) {
+				var k = pair[0].substr(3);
+				if (data[k] === undefined) data[k] = { principal: principals[k].cloneNode(true), privs: [] };
+				data[k].privs.push(grantnodes[pair[1]].cloneNode(true));
+			}
+			share_collection(url, data, function(status) {
+				if (status != 200) alert("Error");
+				acl_list(url, user, pass, form, principal_prefix);
+			});
+			e.preventDefault();
+		};
+	};
+}
+
+function get_cookie(name)
+{
+	var f = document.cookie.split("; ").find(row => row.startsWith(name));
+	if (!f) return null;
+	return f.split("=")[1];
+}
+function set_cookie(name, val)
+{
+	document.cookie = name + "=" + val;
+}
+		</script>
+		<style>
+select[multiple] {
+	width: 300px;
+	height: 200px;
+}
+form {
+	display: none;
+}
+		</style>
+	</head>
+	<body>
+		<h1>DAV ACL</h1>
+		<h2>Calendars</h2>
+		<ul id="cals">
+		</ul>
+		<h2>Addressbooks</h2>
+		<ul id="addrs">
+		</ul>
+		<form id="aclform">
+			<h2>ACL <span class="aclname"></span></h2>
+			<table border="1">
+				<thead>
+					<tr><th>User</th><th>Grants</th></tr>
+				</thead>
+				<tbody></tbody>
+			</table>
+			<a href="javascript:;" class="new">New entry</a>
+			<input type="submit" value="Save" />
+		</form>
+		<script>
+var user = get_cookie("user"), pass = get_cookie("pass");
+
+console.log(user, pass);
+if (!user || !pass) {
+	user = prompt("Username");
+	pass = prompt("Password");
+	set_cookie("user", user);
+	set_cookie("pass", pass);
+}
+
+var form = document.getElementById("aclform");
+get_principal(PREFIX + "/", user, pass, function(principal, principal_prefix) {
+	get_homes(PREFIX + principal, user, pass, function(chs, ahs) {
+		get_collection(PREFIX + chs, user, pass, function(cals) {
+			for (var i = 0; i < cals.length; ++i) {
+				var li = document.createElement("li");
+				var a = document.createElement("a");
+				li.appendChild(a);
+				a.href = "javascript:;";
+				a.innerText = cals[i].name;
+				(function() {
+					var href = cals[i].href;
+					a.onclick = function() {
+						form.getElementsByClassName("aclname")[0].innerText = this.innerText;
+						acl_list(PREFIX + href, user, pass, form, principal_prefix);
+					};
+				})();
+				document.getElementById("cals").appendChild(li);
+			}
+		});
+		get_collection(PREFIX + ahs, user, pass, function(cals) {
+			for (var i = 0; i < cals.length; ++i) {
+				var li = document.createElement("li");
+				var a = document.createElement("a");
+				li.appendChild(a);
+				a.href = "javascript:;";
+				a.innerText = cals[i].name;
+				var href = cals[i].href;
+				(function() {
+					a.onclick = function() {
+						form.getElementsByClassName("aclname")[0].innerText = this.innerText;
+						acl_list(PREFIX + href, user, pass, form, principal_prefix);
+					};
+				})();
+				document.getElementById("addrs").appendChild(li);
+			}
+		});
+	});
+});
+		</script>
+		<a href="javascript:set_cookie('user','')&amp;&amp;set_cookie('pass','');window.location.reload(false);">Logout</a>
+	</body>
+</html>
