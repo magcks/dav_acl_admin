@@ -358,8 +358,8 @@ get_principal(PREFIX + "/", user, pass, function(principal, principal_prefix) {
 				li.appendChild(a);
 				a.href = "javascript:;";
 				a.innerText = cals[i].name;
-				var href = cals[i].href;
 				(function() {
+					var href = cals[i].href;
 					a.onclick = function() {
 						form.getElementsByClassName("aclname")[0].innerText = this.innerText;
 						acl_list(PREFIX + href, user, pass, form, principal_prefix);
